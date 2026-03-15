@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/cv", "crates/boa-wasm-guest"]
+resolver = "2"

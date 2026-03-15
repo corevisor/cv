@@ -1,0 +1,11 @@
+[package]
+name = "boa-wasm-guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+boa_engine = "0.21"
+boa_gc = "0.21"
+boa_runtime = { version = "0.21", default-features = false, features = ["fetch"] }
+http = "1"
+wasi = "=0.14.0"

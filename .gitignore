@@ -1,0 +1,12 @@
+/target
+
+# Environment and secrets
+.env
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# macOS
+.DS_Store

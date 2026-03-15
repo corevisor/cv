@@ -1,0 +1,33 @@
+[package]
+name = "corevisor-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Corevisor CLI — local credential management + MCP server"
+license = "BUSL-1.1"
+
+[[bin]]
+name = "cv"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "0.17", features = ["server", "transport-io"] }
+wasmtime = { version = "42", features = ["component-model"] }
+wasmtime-wasi = "42"
+wasmtime-wasi-http = "42"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.0"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+async-trait = "0.1"
+dirs = "6"
+http = "1"
+hyper = "1"
+rpassword = "7"
+open = "5"
+tokio-util = "0.7"
