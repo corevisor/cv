@@ -1,0 +1,2 @@
+- name: Install wasm32-wasip2 target
+  run: rustup target add wasm32-wasip2

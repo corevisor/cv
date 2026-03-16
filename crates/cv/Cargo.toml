@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Corevisor CLI — local credential management + MCP server"
 license = "BUSL-1.1"
+repository = "https://github.com/corevisor/cv"
+homepage = "https://github.com/corevisor/cv"
 
 [[bin]]
 name = "cv"

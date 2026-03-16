@@ -119,12 +119,7 @@ impl JsExecutor {
         description = "List the API services/domains you have access to through corevisor, along with credential metadata (no secrets)."
     )]
     async fn list_services(&self) -> Result<CallToolResult, McpError> {
-        let services = self.hub_client
-            .get_services(&self.profile_id)
-            .await
-            .map_err(|e| McpError::internal_error(format!("failed to fetch services: {e}"), None))?;
-
-        if services.is_empty() {
+        if self.services.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No services configured. Add domains via `cv credential set <domain>` or sync from the hub.",
             )]));
@@ -132,7 +127,7 @@ impl JsExecutor {
 
         let store = &self.credential_store;
         let mut lines = vec!["Configured services:".to_string()];
-        for svc in &services {
+        for svc in &self.services {
             let has_cred = store
                 .get(&self.profile_id, &svc.domain)
                 .ok()

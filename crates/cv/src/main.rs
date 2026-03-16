@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
                 profile,
             } => {
                 let profile_id = resolve_profile(&app_config, profile.as_deref())?;
-                cmd_credential_set(&profile_id, &domain, &header)?;
+                cmd_credential_set(&mut app_config, &profile_id, &domain, &header)?;
             }
             CredentialAction::List { profile } => {
                 let profile_id = resolve_profile(&app_config, profile.as_deref())?;
@@ -265,7 +265,7 @@ async fn cmd_sync(config: &mut config::AppConfig, profile_id: &str) -> Result<()
     Ok(())
 }
 
-fn cmd_credential_set(profile_id: &str, domain: &str, header_name: &str) -> Result<()> {
+fn cmd_credential_set(config: &mut config::AppConfig, profile_id: &str, domain: &str, header_name: &str) -> Result<()> {
     let store = credential_store::CredentialStore::new()?;
 
     eprintln!("Enter credential value for {domain}:");
@@ -280,6 +280,18 @@ fn cmd_credential_set(profile_id: &str, domain: &str, header_name: &str) -> Resu
         header_name: header_name.to_string(),
         header_value: value.trim().to_string(),
     })?;
+
+    // Ensure the domain is registered as an allowed service in the profile config
+    if let Some(profile) = config.profiles.get_mut(profile_id) {
+        if !profile.services.iter().any(|s| s.domain == domain) {
+            profile.services.push(types::ServiceConfig {
+                domain: domain.to_string(),
+                catalog_id: None,
+                header_name: header_name.to_string(),
+            });
+            config.save()?;
+        }
+    }
 
     eprintln!("Credential stored for {domain} (header: {header_name})");
     Ok(())

@@ -2,6 +2,11 @@
 name = "boa-wasm-guest"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/corevisor/cv"
+publish = false
+
+[package.metadata.dist]
+dist = false
 
 [dependencies]
 boa_engine = "0.21"
