@@ -15,3 +15,8 @@ npm-scope = "@corevisor"
 npm-package = "cv"
 github-build-setup = "../build-setup.yml"
 publish-jobs = ["npm"]
+
+# Config for 'cargo dist build'
+[profile.dist]
+inherits = "release"
+lto = "thin"
