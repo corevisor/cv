@@ -134,9 +134,15 @@ impl JsExecutor {
                 .flatten()
                 .is_some();
             if has_cred {
-                lines.push(format!("- {} (header: {}, credential: set)", svc.domain, svc.header_name));
+                lines.push(format!(
+                    "- {} (header: {}, credential: set)",
+                    svc.domain, svc.header_name
+                ));
             } else {
-                lines.push(format!("- {} (header: {}, credential: not set)", svc.domain, svc.header_name));
+                lines.push(format!(
+                    "- {} (header: {}, credential: not set)",
+                    svc.domain, svc.header_name
+                ));
             }
         }
 
@@ -153,19 +159,21 @@ impl JsExecutor {
         Parameters(args): Parameters<SearchApiDocsArgs>,
     ) -> Result<CallToolResult, McpError> {
         if args.domain.is_none() && args.slug.is_none() {
-            return Err(McpError::invalid_params("must provide domain or slug", None));
+            return Err(McpError::invalid_params(
+                "must provide domain or slug",
+                None,
+            ));
         }
 
-        let results = self.hub_client
+        let results = self
+            .hub_client
             .search_api_docs(&args.pattern, args.domain.as_deref(), args.slug.as_deref())
             .await
             .map_err(|e| {
                 McpError::internal_error(format!("failed to search API docs: {e}"), None)
             })?;
 
-        // results is a JSON value — format it
-        let text = serde_json::to_string_pretty(&results)
-            .unwrap_or_else(|_| "[]".to_string());
+        let text = serde_json::to_string_pretty(&results).unwrap_or_else(|_| "[]".to_string());
 
         if text == "[]" {
             return Ok(CallToolResult::success(vec![Content::text(

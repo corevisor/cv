@@ -1,7 +1,3 @@
-// Shared types between CLI and Hub.
-// Hub-side copy: https://github.com/flynnbody/corevisor (crates/common/src/lib.rs)
-// Keep in sync when modifying wire-protocol types.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,8 +7,6 @@ pub struct ServiceConfig {
     pub header_name: String,
 }
 
-// -- Credential entry (used in local store) --
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialEntry {
     pub profile_id: String,
@@ -20,8 +14,6 @@ pub struct CredentialEntry {
     pub header_name: String,
     pub header_value: String,
 }
-
-// -- Approval system types --
 
 /// Action a rule can specify. Defaults to `Allow`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

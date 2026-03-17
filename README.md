@@ -14,6 +14,12 @@ Every outbound request is checked against the Corevisor Hub's approval rules. Re
 
 For more information, see [corevisor.xyz](https://corevisor.xyz).
 
+## Install
+
+```sh
+npm i -g @corevisor/cv
+```
+
 ## Usage
 
 ```sh

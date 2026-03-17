@@ -1,5 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
@@ -18,11 +19,19 @@ use crate::hub_client::ApprovalChecker;
 
 /// Abstraction over credential lookup for testability.
 trait CredentialLookup {
-    fn get_credential(&self, profile_id: &str, domain: &str) -> anyhow::Result<Option<CredentialEntry>>;
+    fn get_credential(
+        &self,
+        profile_id: &str,
+        domain: &str,
+    ) -> anyhow::Result<Option<CredentialEntry>>;
 }
 
 impl CredentialLookup for CredentialStore {
-    fn get_credential(&self, profile_id: &str, domain: &str) -> anyhow::Result<Option<CredentialEntry>> {
+    fn get_credential(
+        &self,
+        profile_id: &str,
+        domain: &str,
+    ) -> anyhow::Result<Option<CredentialEntry>> {
         self.get(profile_id, domain)
     }
 }
@@ -51,6 +60,8 @@ struct GuestState {
     hub_client: Arc<dyn ApprovalChecker>,
     /// Optional context describing why the code is being executed.
     context: Option<String>,
+    /// Flag to pause the execution timeout while waiting for user approval.
+    approval_pending: Arc<AtomicBool>,
 }
 
 impl WasiView for GuestState {
@@ -85,9 +96,7 @@ fn authorize_request(
     }
 
     match hub_result {
-        Err(e) => {
-            RequestDecision::Deny(format!("hub unreachable, request denied: {e}"))
-        }
+        Err(e) => RequestDecision::Deny(format!("hub unreachable, request denied: {e}")),
         Ok(resp) => match resp.action {
             RuleAction::Allow => RequestDecision::Allow,
             RuleAction::Deny => {
@@ -135,7 +144,9 @@ fn fetch_hub_approval(
 
     std::thread::spawn(move || {
         handle.block_on(async {
-            client.check_approval(&pid, &domain, &method, &path, context.as_deref()).await
+            client
+                .check_approval(&pid, &domain, &method, &path, context.as_deref())
+                .await
         })
     })
     .join()
@@ -158,9 +169,7 @@ fn poll_hub_approval(
     let timeout = Duration::from_secs(120);
 
     std::thread::spawn(move || {
-        handle.block_on(async {
-            client.poll_approval(&pid, &aid, timeout).await
-        })
+        handle.block_on(async { client.poll_approval(&pid, &aid, timeout).await })
     })
     .join()
     .map_err(|_| "approval poll thread panicked".to_string())?
@@ -280,6 +289,7 @@ impl WasiHttpView for GuestState {
 
         let hub_client = self.hub_client.clone();
         let pid = profile_id.clone();
+        let approval_flag = self.approval_pending.clone();
 
         let header = process_outbound_request(
             &self.services,
@@ -288,7 +298,12 @@ impl WasiHttpView for GuestState {
             &req_method,
             &req_path,
             hub_response,
-            |approval_id| poll_hub_approval(&hub_client, &pid, approval_id),
+            |approval_id| {
+                approval_flag.store(true, Ordering::Relaxed);
+                let result = poll_hub_approval(&hub_client, &pid, approval_id);
+                approval_flag.store(false, Ordering::Relaxed);
+                result
+            },
             store.as_ref(),
         )
         .map_err(|msg| HttpError::trap(wasmtime::Error::msg(msg)))?;
@@ -361,6 +376,8 @@ impl JsEngine {
         wasi_builder.stdout(stdout_pipe.clone());
         wasi_builder.stderr(stderr_pipe.clone());
 
+        let approval_pending = Arc::new(AtomicBool::new(false));
+
         let state = GuestState {
             wasi: wasi_builder.build(),
             http: WasiHttpCtx::new(),
@@ -370,16 +387,31 @@ impl JsEngine {
             credential_store,
             hub_client,
             context,
+            approval_pending: approval_pending.clone(),
         };
 
         let mut store = Store::new(&self.engine, state);
         store.set_epoch_deadline(1);
 
-        // Spawn epoch incrementer for timeout
+        // Spawn epoch incrementer for timeout.
+        // The clock pauses while approval_pending is true so that user
+        // approval time does not count against the execution timeout.
         let engine_clone = self.engine.clone();
         let timeout_handle = tokio::task::spawn_blocking(move || {
-            std::thread::sleep(timeout);
-            engine_clone.increment_epoch();
+            let mut elapsed = Duration::ZERO;
+            let mut last_tick = Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+                let now = Instant::now();
+                if !approval_pending.load(Ordering::Relaxed) {
+                    elapsed += now - last_tick;
+                }
+                last_tick = now;
+                if elapsed >= timeout {
+                    engine_clone.increment_epoch();
+                    break;
+                }
+            }
         });
 
         use wasmtime_wasi::p2::bindings::Command;
@@ -426,7 +458,9 @@ impl JsEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ApprovalStatus, ApproveResponse, CredentialEntry, RuleAction, ServiceConfig};
+    use crate::types::{
+        ApprovalStatus, ApproveResponse, CredentialEntry, RuleAction, ServiceConfig,
+    };
 
     fn test_services() -> Vec<ServiceConfig> {
         vec![ServiceConfig {
@@ -444,8 +478,6 @@ mod tests {
         }
     }
 
-    // -- Mock credential store --
-
     struct MockCredentials {
         entries: Vec<CredentialEntry>,
     }
@@ -456,7 +488,9 @@ mod tests {
         }
 
         fn with(entry: CredentialEntry) -> Self {
-            Self { entries: vec![entry] }
+            Self {
+                entries: vec![entry],
+            }
         }
     }
 
@@ -498,7 +532,10 @@ mod tests {
             "/foo",
             Ok(&approve_response(RuleAction::Allow, None)),
         );
-        assert_eq!(result, RequestDecision::Deny("domain not allowed: unknown.com".to_string()));
+        assert_eq!(
+            result,
+            RequestDecision::Deny("domain not allowed: unknown.com".to_string())
+        );
     }
 
     #[test]
@@ -512,7 +549,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            RequestDecision::Deny("hub unreachable, request denied: connection refused".to_string())
+            RequestDecision::Deny(
+                "hub unreachable, request denied: connection refused".to_string()
+            )
         );
     }
 
@@ -555,7 +594,10 @@ mod tests {
             "/resource",
             Ok(&resp),
         );
-        assert_eq!(result, RequestDecision::NeedsApproval("abc-123".to_string()));
+        assert_eq!(
+            result,
+            RequestDecision::NeedsApproval("abc-123".to_string())
+        );
     }
 
     // -- check_poll_result tests --
@@ -580,12 +622,11 @@ mod tests {
 
     #[test]
     fn poll_error() {
-        let result = check_poll_result(
-            &Err("connection reset".to_string()),
-            "GET",
-            "/foo",
+        let result = check_poll_result(&Err("connection reset".to_string()), "GET", "/foo");
+        assert_eq!(
+            result,
+            Err("approval poll error: connection reset".to_string())
         );
-        assert_eq!(result, Err("approval poll error: connection reset".to_string()));
     }
 
     // -- enforce_decision tests --
@@ -793,7 +834,10 @@ mod tests {
             "api.example.com",
             "POST",
             "/data",
-            Ok(approve_response(RuleAction::RequireApproval, Some("my-approval-id"))),
+            Ok(approve_response(
+                RuleAction::RequireApproval,
+                Some("my-approval-id"),
+            )),
             |id| {
                 assert_eq!(id, "my-approval-id");
                 Ok(ApprovalStatus::Approved)
