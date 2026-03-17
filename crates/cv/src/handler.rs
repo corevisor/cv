@@ -63,7 +63,7 @@ impl JsExecutor {
 #[tool_router]
 impl JsExecutor {
     #[tool(
-        description = "Execute JavaScript code. Credentials are automatically injected into HTTP requests for configured domains.\n\nExample:\n```js\nconst resp = await fetch(\"https://api.example.com/v1/resource\", {\n  method: \"POST\",\n  headers: { \"Content-Type\": \"application/json\" },\n  body: JSON.stringify({ query: \"search term\" })\n});\nconst data = await resp.json();\nreturn JSON.stringify(data, null, 2);\n```\n\nNotes:\n- Use `return` to produce output (the last expression is NOT automatically returned)\n- Use `JSON.stringify()` for structured data to avoid `[object Object]` output\n- Top-level `await` is supported"
+        description = "Execute JavaScript code with automatic credential injection for configured API domains.\n\nHelpers: `get(url, headers?)`, `post(url, body, headers?)`, `put(url, body, headers?)`, `patch(url, body, headers?)`, `del(url, headers?)` — all return parsed JSON.\n\nExample:\n```js\nconst data = await post(\"https://api.example.com/v1/resource\", { query: \"search term\" });\nreturn data.results;\n```\n\nNotes:\n- Use `return` to produce output (last expression is NOT auto-returned)\n- Object/array return values are auto-stringified — no need for `JSON.stringify()`\n- Top-level `await` is supported\n- Raw `fetch()` is available for non-JSON responses or custom needs"
     )]
     async fn execute_javascript(
         &self,
