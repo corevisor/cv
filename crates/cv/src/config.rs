@@ -2,14 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use crate::types::ServiceConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileConfig {
     pub name: String,
-    pub services: Vec<ServiceConfig>,
-    pub synced_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

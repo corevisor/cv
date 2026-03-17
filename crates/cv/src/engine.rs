@@ -12,7 +12,7 @@ use wasmtime_wasi_http::types::{
 };
 use wasmtime_wasi_http::{HttpError, WasiHttpCtx, WasiHttpView};
 
-use crate::types::{ApprovalStatus, ApproveResponse, CredentialEntry, RuleAction, ServiceConfig};
+use crate::types::{ApprovalStatus, ApproveResponse, CredentialEntry, RuleAction};
 
 use crate::credential_store::CredentialStore;
 use crate::hub_client::ApprovalChecker;
@@ -52,8 +52,6 @@ struct GuestState {
     table: ResourceTable,
     /// Profile ID for credential lookup.
     profile_id: Option<String>,
-    /// Allowed services for this profile.
-    services: Vec<ServiceConfig>,
     /// Local credential store.
     credential_store: Option<Arc<CredentialStore>>,
     /// Hub client for approval checks.
@@ -81,27 +79,13 @@ enum RequestDecision {
     NeedsApproval(String),
 }
 
-/// Pure decision logic for whether an outbound request should proceed.
-///
-/// `hub_result`: `Err` = hub unreachable or not available, `Ok` = hub responded.
-fn authorize_request(
-    services: &[ServiceConfig],
-    domain: &str,
-    method: &str,
-    path: &str,
-    hub_result: Result<&ApproveResponse, &str>,
-) -> RequestDecision {
-    if !services.iter().any(|s| s.domain == domain) {
-        return RequestDecision::Deny(format!("domain not allowed: {domain}"));
-    }
-
+/// Pure decision logic based on the hub response.
+fn authorize_request(hub_result: Result<&ApproveResponse, &str>) -> RequestDecision {
     match hub_result {
         Err(e) => RequestDecision::Deny(format!("hub unreachable, request denied: {e}")),
         Ok(resp) => match resp.action {
             RuleAction::Allow => RequestDecision::Allow,
-            RuleAction::Deny => {
-                RequestDecision::Deny(format!("request denied by approval rule: {method} {path}"))
-            }
+            RuleAction::Deny => RequestDecision::Deny("request denied by hub".to_string()),
             RuleAction::RequireApproval => {
                 let id = resp.approval_id.clone().unwrap_or_default();
                 RequestDecision::NeedsApproval(id)
@@ -199,12 +183,9 @@ fn enforce_decision(
 
 /// Authorize an outbound request and resolve the credential header to inject.
 ///
-/// All I/O is provided via parameters: `hub_response` from the hub check,
-/// `poll_fn` for approval polling, and `creds` for credential lookup.
-/// Returns `Ok(Some(header))` if a credential should be injected,
-/// `Ok(None)` if allowed but no credential found, or `Err(msg)` to deny.
+/// The hub decides allow/deny/require_approval. If allowed, the credential
+/// for the domain is looked up locally and injected if found.
 fn process_outbound_request(
-    services: &[ServiceConfig],
     profile_id: &str,
     domain: &str,
     method: &str,
@@ -213,13 +194,7 @@ fn process_outbound_request(
     poll_fn: impl FnOnce(&str) -> Result<ApprovalStatus, String>,
     creds: &dyn CredentialLookup,
 ) -> Result<Option<CredentialHeader>, String> {
-    let decision = authorize_request(
-        services,
-        domain,
-        method,
-        path,
-        hub_response.as_ref().map_err(|e| e.as_str()),
-    );
+    let decision = authorize_request(hub_response.as_ref().map_err(|e| e.as_str()));
 
     if hub_response.is_err() {
         if let RequestDecision::Deny(ref msg) = decision {
@@ -235,20 +210,16 @@ fn process_outbound_request(
 
     enforce_decision(decision, poll_result.as_ref(), method, path)?;
 
-    let service = services.iter().find(|s| s.domain == domain);
-    match service {
-        Some(svc) => match creds.get_credential(profile_id, domain) {
-            Ok(Some(cred)) => Ok(Some(CredentialHeader {
-                name: svc.header_name.clone(),
-                value: cred.header_value,
-            })),
-            Ok(None) => Ok(None),
-            Err(e) => {
-                tracing::warn!(domain = %domain, error = %e, "credential lookup failed");
-                Ok(None)
-            }
-        },
-        None => Ok(None),
+    match creds.get_credential(profile_id, domain) {
+        Ok(Some(cred)) => Ok(Some(CredentialHeader {
+            name: cred.header_name,
+            value: cred.header_value,
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => {
+            tracing::warn!(domain = %domain, error = %e, "credential lookup failed");
+            Ok(None)
+        }
     }
 }
 
@@ -292,7 +263,6 @@ impl WasiHttpView for GuestState {
         let approval_flag = self.approval_pending.clone();
 
         let header = process_outbound_request(
-            &self.services,
             profile_id,
             &target_domain,
             &req_method,
@@ -362,7 +332,6 @@ impl JsEngine {
         code: &str,
         timeout: Duration,
         profile_id: Option<String>,
-        services: Vec<ServiceConfig>,
         credential_store: Option<Arc<CredentialStore>>,
         hub_client: Arc<dyn ApprovalChecker>,
         context: Option<String>,
@@ -383,7 +352,6 @@ impl JsEngine {
             http: WasiHttpCtx::new(),
             table: ResourceTable::new(),
             profile_id,
-            services,
             credential_store,
             hub_client,
             context,
@@ -458,17 +426,7 @@ impl JsEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        ApprovalStatus, ApproveResponse, CredentialEntry, RuleAction, ServiceConfig,
-    };
-
-    fn test_services() -> Vec<ServiceConfig> {
-        vec![ServiceConfig {
-            domain: "api.example.com".to_string(),
-            catalog_id: None,
-            header_name: "Authorization".to_string(),
-        }]
-    }
+    use crate::types::{ApprovalStatus, ApproveResponse, CredentialEntry, RuleAction};
 
     fn approve_response(action: RuleAction, approval_id: Option<&str>) -> ApproveResponse {
         ApproveResponse {
@@ -524,29 +482,8 @@ mod tests {
     // -- authorize_request tests --
 
     #[test]
-    fn authorize_domain_not_in_services() {
-        let result = authorize_request(
-            &test_services(),
-            "unknown.com",
-            "GET",
-            "/foo",
-            Ok(&approve_response(RuleAction::Allow, None)),
-        );
-        assert_eq!(
-            result,
-            RequestDecision::Deny("domain not allowed: unknown.com".to_string())
-        );
-    }
-
-    #[test]
     fn authorize_hub_unreachable() {
-        let result = authorize_request(
-            &test_services(),
-            "api.example.com",
-            "GET",
-            "/foo",
-            Err("connection refused"),
-        );
+        let result = authorize_request(Err("connection refused"));
         assert_eq!(
             result,
             RequestDecision::Deny(
@@ -558,42 +495,24 @@ mod tests {
     #[test]
     fn authorize_hub_allows() {
         let resp = approve_response(RuleAction::Allow, None);
-        let result = authorize_request(
-            &test_services(),
-            "api.example.com",
-            "GET",
-            "/foo",
-            Ok(&resp),
-        );
+        let result = authorize_request(Ok(&resp));
         assert_eq!(result, RequestDecision::Allow);
     }
 
     #[test]
     fn authorize_hub_denies() {
         let resp = approve_response(RuleAction::Deny, None);
-        let result = authorize_request(
-            &test_services(),
-            "api.example.com",
-            "POST",
-            "/bar",
-            Ok(&resp),
-        );
+        let result = authorize_request(Ok(&resp));
         assert_eq!(
             result,
-            RequestDecision::Deny("request denied by approval rule: POST /bar".to_string())
+            RequestDecision::Deny("request denied by hub".to_string())
         );
     }
 
     #[test]
     fn authorize_hub_requires_approval() {
         let resp = approve_response(RuleAction::RequireApproval, Some("abc-123"));
-        let result = authorize_request(
-            &test_services(),
-            "api.example.com",
-            "DELETE",
-            "/resource",
-            Ok(&resp),
-        );
+        let result = authorize_request(Ok(&resp));
         assert_eq!(
             result,
             RequestDecision::NeedsApproval("abc-123".to_string())
@@ -684,30 +603,10 @@ mod tests {
         assert!(result.unwrap_err().contains("approval required"));
     }
 
-    // -- process_outbound_request tests --
-
-    #[test]
-    fn process_denies_unknown_domain() {
-        let creds = MockCredentials::empty();
-        let result = process_outbound_request(
-            &test_services(),
-            "prof1",
-            "unknown.com",
-            "GET",
-            "/",
-            Ok(approve_response(RuleAction::Allow, None)),
-            no_poll,
-            &creds,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("domain not allowed"));
-    }
-
     #[test]
     fn process_denies_hub_unreachable() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "GET",
@@ -721,10 +620,9 @@ mod tests {
     }
 
     #[test]
-    fn process_denies_by_rule() {
+    fn process_denies_by_hub() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "POST",
@@ -734,14 +632,13 @@ mod tests {
             &creds,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("denied by approval rule"));
+        assert!(result.unwrap_err().contains("denied by hub"));
     }
 
     #[test]
     fn process_allows_and_injects_credential() {
         let creds = MockCredentials::with(test_credential());
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "GET",
@@ -760,10 +657,24 @@ mod tests {
     }
 
     #[test]
+    fn process_does_not_inject_credential_for_wrong_domain() {
+        let creds = MockCredentials::with(test_credential());
+        let result = process_outbound_request(
+            "prof1",
+            "other-api.example.com",
+            "GET",
+            "/foo",
+            Ok(approve_response(RuleAction::Allow, None)),
+            no_poll,
+            &creds,
+        );
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
     fn process_allows_no_credential() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "GET",
@@ -779,7 +690,6 @@ mod tests {
     fn process_approval_flow_approved() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "DELETE",
@@ -795,7 +705,6 @@ mod tests {
     fn process_approval_flow_denied() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "DELETE",
@@ -812,7 +721,6 @@ mod tests {
     fn process_approval_flow_poll_error() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "DELETE",
@@ -829,7 +737,6 @@ mod tests {
     fn process_approval_passes_correct_id_to_poll() {
         let creds = MockCredentials::empty();
         let result = process_outbound_request(
-            &test_services(),
             "prof1",
             "api.example.com",
             "POST",

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::types::{ApprovalStatus, ApproveCheckRequest, ApproveResponse, SearchEndpointsRequest, ServiceConfig};
+use crate::types::{ApprovalStatus, ApproveCheckRequest, ApproveResponse, SearchEndpointsRequest};
 
 /// Trait for checking request approvals against a hub.
 #[async_trait]
@@ -132,42 +132,6 @@ impl HubClient {
         }
 
         Ok(resp.json().await?)
-    }
-
-    /// Fetch services for a profile, mapped to ServiceConfig.
-    pub async fn get_services(&self, profile_id: &str) -> Result<Vec<ServiceConfig>> {
-        let resp = self
-            .http
-            .get(format!(
-                "{}/profiles/{}/services",
-                self.hub_url, profile_id
-            ))
-            .header("Authorization", self.auth_header())
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("get services failed: {body}");
-        }
-
-        // The hub returns enriched ServiceResponse; we only need the ServiceConfig fields.
-        #[derive(serde::Deserialize)]
-        struct HubServiceResponse {
-            domain: String,
-            catalog_id: Option<i64>,
-            header_name: Option<String>,
-        }
-
-        let rows: Vec<HubServiceResponse> = resp.json().await?;
-        Ok(rows
-            .into_iter()
-            .map(|s| ServiceConfig {
-                domain: s.domain,
-                catalog_id: s.catalog_id,
-                header_name: s.header_name.unwrap_or_else(|| "Authorization".to_string()),
-            })
-            .collect())
     }
 
     /// Search API endpoints via the hub registry.

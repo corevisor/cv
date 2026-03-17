@@ -10,7 +10,10 @@ use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
 
 #[derive(Parser)]
-#[command(name = "cv", about = "Corevisor CLI — local credential management + MCP server")]
+#[command(
+    name = "cv",
+    about = "Corevisor CLI — local credential management + MCP server"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -29,12 +32,6 @@ enum Commands {
         /// Hub URL (default: https://api.corevisor.xyz)
         #[arg(long, default_value = "https://api.corevisor.xyz")]
         hub_url: String,
-    },
-    /// Sync profile config from the Hub
-    Sync {
-        /// Profile to sync (or all if omitted)
-        #[arg(long)]
-        profile: Option<String>,
     },
     /// Manage local credentials
     Credential {
@@ -93,10 +90,6 @@ async fn main() -> Result<()> {
         Commands::Login { hub_url } => {
             cmd_login(&mut app_config, &hub_url).await?;
         }
-        Commands::Sync { profile } => {
-            let profile_id = resolve_profile(&app_config, profile.as_deref())?;
-            cmd_sync(&mut app_config, &profile_id).await?;
-        }
         Commands::Credential { action } => match action {
             CredentialAction::Set {
                 domain,
@@ -104,7 +97,7 @@ async fn main() -> Result<()> {
                 profile,
             } => {
                 let profile_id = resolve_profile(&app_config, profile.as_deref())?;
-                cmd_credential_set(&mut app_config, &profile_id, &domain, &header)?;
+                cmd_credential_set(&profile_id, &domain, &header)?;
             }
             CredentialAction::List { profile } => {
                 let profile_id = resolve_profile(&app_config, profile.as_deref())?;
@@ -128,7 +121,7 @@ fn resolve_profile(config: &config::AppConfig, name_or_id: Option<&str>) -> Resu
                 return Ok(id.clone());
             }
         }
-        anyhow::bail!("profile '{}' not found. Run `cv sync` first.", val);
+        anyhow::bail!("profile '{}' not found. Run `cv login` first.", val);
     }
     config
         .default_profile
@@ -136,10 +129,7 @@ fn resolve_profile(config: &config::AppConfig, name_or_id: Option<&str>) -> Resu
         .ok_or_else(|| anyhow::anyhow!("no default profile set. Use --profile or run `cv login`"))
 }
 
-async fn cmd_serve(
-    config: &config::AppConfig,
-    profile_id: &str,
-) -> Result<()> {
+async fn cmd_serve(config: &config::AppConfig, profile_id: &str) -> Result<()> {
     let profile = config
         .profiles
         .get(profile_id)
@@ -163,7 +153,6 @@ async fn cmd_serve(
     let executor = handler::JsExecutor::new(
         js_engine,
         profile_id.to_string(),
-        profile.services.clone(),
         store,
         hub,
     );
@@ -182,10 +171,7 @@ async fn cmd_serve(
     Ok(())
 }
 
-async fn cmd_login(
-    config: &mut config::AppConfig,
-    hub_url: &str,
-) -> Result<()> {
+async fn cmd_login(config: &mut config::AppConfig, hub_url: &str) -> Result<()> {
     let hub_url = hub_url.trim_end_matches('/').to_string();
 
     eprintln!("Opening browser for authentication...");
@@ -204,19 +190,16 @@ async fn cmd_login(
     }
 
     for p in &profiles {
-        let services = client.get_services(&p.id).await?;
         config.profiles.insert(
             p.id.clone(),
             config::ProfileConfig {
                 name: p.name.clone(),
-                services,
-                synced_at: Some(chrono_now()),
             },
         );
     }
 
     config.save()?;
-    eprintln!("Logged in. {} profile(s) synced.", profiles.len());
+    eprintln!("Logged in. {} profile(s) found.", profiles.len());
     for p in &profiles {
         eprintln!("  - {} ({})", p.name, p.id);
     }
@@ -224,48 +207,7 @@ async fn cmd_login(
     Ok(())
 }
 
-async fn cmd_sync(config: &mut config::AppConfig, profile_id: &str) -> Result<()> {
-    let hub_url = config
-        .hub_url
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("not logged in. Run `cv login` first."))?;
-    let token = config
-        .oauth_token
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no OAuth token. Run `cv login` first."))?;
-
-    let client = hub_client::HubClient::new(hub_url.clone(), token.clone());
-    let services = client.get_services(profile_id).await?;
-
-    // Look up the profile name from existing config, or fetch all profiles to find it
-    let name = if let Some(existing) = config.profiles.get(profile_id) {
-        existing.name.clone()
-    } else {
-        let profiles = client.get_profiles().await?;
-        profiles
-            .iter()
-            .find(|p| p.id == profile_id)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| profile_id.to_string())
-    };
-
-    let service_count = services.len();
-    config.profiles.insert(
-        profile_id.to_string(),
-        config::ProfileConfig {
-            name: name.clone(),
-            services,
-            synced_at: Some(chrono_now()),
-        },
-    );
-    config.save()?;
-
-    eprintln!("Synced profile '{}' ({} services)", name, service_count);
-
-    Ok(())
-}
-
-fn cmd_credential_set(config: &mut config::AppConfig, profile_id: &str, domain: &str, header_name: &str) -> Result<()> {
+fn cmd_credential_set(profile_id: &str, domain: &str, header_name: &str) -> Result<()> {
     let store = credential_store::CredentialStore::new()?;
 
     eprintln!("Enter credential value for {domain}:");
@@ -280,18 +222,6 @@ fn cmd_credential_set(config: &mut config::AppConfig, profile_id: &str, domain: 
         header_name: header_name.to_string(),
         header_value: value.trim().to_string(),
     })?;
-
-    // Ensure the domain is registered as an allowed service in the profile config
-    if let Some(profile) = config.profiles.get_mut(profile_id) {
-        if !profile.services.iter().any(|s| s.domain == domain) {
-            profile.services.push(types::ServiceConfig {
-                domain: domain.to_string(),
-                catalog_id: None,
-                header_name: header_name.to_string(),
-            });
-            config.save()?;
-        }
-    }
 
     eprintln!("Credential stored for {domain} (header: {header_name})");
     Ok(())
@@ -320,13 +250,3 @@ fn cmd_credential_delete(profile_id: &str, domain: &str) -> Result<()> {
     Ok(())
 }
 
-fn chrono_now() -> String {
-    // Simple ISO timestamp without chrono dependency
-    use std::time::SystemTime;
-    let dur = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
-    let secs = dur.as_secs();
-    // Basic formatting — good enough for a timestamp
-    format!("{}Z", secs)
-}

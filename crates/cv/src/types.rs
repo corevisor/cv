@@ -1,13 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceConfig {
-    pub domain: String,
-    pub catalog_id: Option<i64>,
-    pub header_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialEntry {
     pub profile_id: String,
     pub domain: String,

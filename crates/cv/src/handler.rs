@@ -8,8 +8,6 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::types::ServiceConfig;
-
 use crate::credential_store::CredentialStore;
 use crate::engine::JsEngine;
 use crate::hub_client::{ApprovalChecker, HubClient};
@@ -40,7 +38,6 @@ pub struct SearchApiDocsArgs {
 pub struct JsExecutor {
     engine: JsEngine,
     profile_id: String,
-    services: Vec<ServiceConfig>,
     credential_store: Arc<CredentialStore>,
     hub_client: Arc<HubClient>,
     tool_router: ToolRouter<Self>,
@@ -50,14 +47,12 @@ impl JsExecutor {
     pub fn new(
         engine: JsEngine,
         profile_id: String,
-        services: Vec<ServiceConfig>,
         credential_store: CredentialStore,
         hub_client: HubClient,
     ) -> Self {
         Self {
             engine,
             profile_id,
-            services,
             credential_store: Arc::new(credential_store),
             hub_client: Arc::new(hub_client),
             tool_router: Self::tool_router(),
@@ -68,7 +63,7 @@ impl JsExecutor {
 #[tool_router]
 impl JsExecutor {
     #[tool(
-        description = "Execute JavaScript code. Credentials are automatically injected into HTTP requests for configured domains."
+        description = "Execute JavaScript code. Credentials are automatically injected into HTTP requests for configured domains.\n\nExample:\n```js\nconst resp = await fetch(\"https://api.example.com/v1/resource\", {\n  method: \"POST\",\n  headers: { \"Content-Type\": \"application/json\" },\n  body: JSON.stringify({ query: \"search term\" })\n});\nconst data = await resp.json();\nreturn JSON.stringify(data, null, 2);\n```\n\nNotes:\n- Use `return` to produce output (the last expression is NOT automatically returned)\n- Use `JSON.stringify()` for structured data to avoid `[object Object]` output\n- Top-level `await` is supported"
     )]
     async fn execute_javascript(
         &self,
@@ -82,7 +77,6 @@ impl JsExecutor {
                 &args.code,
                 timeout,
                 Some(self.profile_id.clone()),
-                self.services.clone(),
                 Some(self.credential_store.clone()),
                 self.hub_client.clone() as Arc<dyn ApprovalChecker>,
                 args.context,
@@ -119,31 +113,23 @@ impl JsExecutor {
         description = "List the API services/domains you have access to through corevisor, along with credential metadata (no secrets)."
     )]
     async fn list_services(&self) -> Result<CallToolResult, McpError> {
-        if self.services.is_empty() {
+        let entries = self
+            .credential_store
+            .list(&self.profile_id)
+            .map_err(|e| McpError::internal_error(format!("credential list error: {e}"), None))?;
+
+        if entries.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No services configured. Add domains via `cv credential set <domain>` or sync from the hub.",
+                "No services configured. Add credentials via `cv credential set <domain>`.",
             )]));
         }
 
-        let store = &self.credential_store;
         let mut lines = vec!["Configured services:".to_string()];
-        for svc in &self.services {
-            let has_cred = store
-                .get(&self.profile_id, &svc.domain)
-                .ok()
-                .flatten()
-                .is_some();
-            if has_cred {
-                lines.push(format!(
-                    "- {} (header: {}, credential: set)",
-                    svc.domain, svc.header_name
-                ));
-            } else {
-                lines.push(format!(
-                    "- {} (header: {}, credential: not set)",
-                    svc.domain, svc.header_name
-                ));
-            }
+        for e in &entries {
+            lines.push(format!(
+                "- {} (header: {}, credential: set)",
+                e.domain, e.header_name
+            ));
         }
 
         Ok(CallToolResult::success(vec![Content::text(
