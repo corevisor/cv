@@ -26,9 +26,6 @@ npm i -g @corevisor/cv
 # Authenticate with a Hub
 cv login
 
-# Sync profiles and services from the Hub
-cv sync
-
 # Store a credential locally
 cv credential set api.notion.com
 
