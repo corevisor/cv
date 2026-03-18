@@ -115,7 +115,6 @@ async fn main() -> Result<()> {
 
 fn resolve_profile(config: &config::AppConfig, name_or_id: Option<&str>) -> Result<String> {
     if let Some(val) = name_or_id {
-        // Try matching by name first, then by ID
         for (id, p) in &config.profiles {
             if p.name == val || id == val {
                 return Ok(id.clone());
@@ -150,15 +149,9 @@ async fn cmd_serve(config: &config::AppConfig, profile_id: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("not logged in. Run `cv login` first."))?;
     let hub = hub_client::HubClient::new(hub_url.clone(), token.clone());
 
-    let executor = handler::JsExecutor::new(
-        js_engine,
-        profile_id.to_string(),
-        store,
-        hub,
-    );
+    let executor = handler::JsExecutor::new(js_engine, profile_id.to_string(), store, hub);
 
     tracing::info!(profile = %profile.name, "starting MCP server (stdio)");
-
     let service = executor
         .serve(rmcp::transport::stdio())
         .await
@@ -249,4 +242,3 @@ fn cmd_credential_delete(profile_id: &str, domain: &str) -> Result<()> {
     eprintln!("Credential deleted for {domain}");
     Ok(())
 }
-

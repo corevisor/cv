@@ -110,25 +110,37 @@ impl JsExecutor {
     }
 
     #[tool(
-        description = "List the API services/domains you have access to through corevisor, along with credential metadata (no secrets)."
+        description = "List the API services/domains available on your profile, along with credential status (no secrets)."
     )]
     async fn list_services(&self) -> Result<CallToolResult, McpError> {
-        let entries = self
+        let services = self
+            .hub_client
+            .get_services(&self.profile_id)
+            .await
+            .map_err(|e| McpError::internal_error(format!("get services failed: {e}"), None))?;
+
+        if services.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No services configured on this profile.",
+            )]));
+        }
+
+        let credentials = self
             .credential_store
             .list(&self.profile_id)
             .map_err(|e| McpError::internal_error(format!("credential list error: {e}"), None))?;
 
-        if entries.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No services configured. Add credentials via `cv credential set <domain>`.",
-            )]));
-        }
-
         let mut lines = vec!["Configured services:".to_string()];
-        for e in &entries {
+        for svc in &services {
+            let header = svc
+                .header_name
+                .as_deref()
+                .unwrap_or("Authorization");
+            let has_credential = credentials.iter().any(|c| c.domain == svc.domain);
+            let cred_status = if has_credential { "set" } else { "not set" };
             lines.push(format!(
-                "- {} (header: {}, credential: set)",
-                e.domain, e.header_name
+                "- {} (header: {}, credential: {})",
+                svc.domain, header, cred_status
             ));
         }
 

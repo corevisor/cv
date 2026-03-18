@@ -29,9 +29,18 @@ impl Fetcher for WasiHttpFetcher {
 
         // Build WASI outgoing request
         let headers = Fields::new();
+        let mut has_user_agent = false;
         for (name, value) in &parts.headers {
+            if name.as_str().eq_ignore_ascii_case("user-agent") {
+                has_user_agent = true;
+            }
             headers
                 .append(&name.to_string(), &value.as_bytes().to_vec())
+                .map_err(|e| js_error!(Error: "header error: {:?}", e))?;
+        }
+        if !has_user_agent {
+            headers
+                .append("user-agent", b"corevisor-cli")
                 .map_err(|e| js_error!(Error: "header error: {:?}", e))?;
         }
 

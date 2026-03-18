@@ -39,6 +39,14 @@ pub struct ProfileResponse {
     pub name: String,
 }
 
+/// Service returned by the hub's services endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct ServiceResponse {
+    pub domain: String,
+    pub header_name: Option<String>,
+    pub catalog_id: Option<i64>,
+}
+
 impl HubClient {
     pub fn new(hub_url: String, oauth_token: String) -> Self {
         Self {
@@ -129,6 +137,26 @@ impl HubClient {
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("get profiles failed: {body}");
+        }
+
+        Ok(resp.json().await?)
+    }
+
+    /// Fetch services for a profile from the hub.
+    pub async fn get_services(&self, profile_id: &str) -> Result<Vec<ServiceResponse>> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/profiles/{}/services",
+                self.hub_url, profile_id
+            ))
+            .header("Authorization", self.auth_header())
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("get services failed: {body}");
         }
 
         Ok(resp.json().await?)
